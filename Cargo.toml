@@ -1,0 +1,26 @@
+[package]
+name = "fe2o3-rpnx-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Geir Isene <g@isene.com>"]
+description = "RPN / XRPN calculator engine: HP-41CX-style stack, full command set, and a FOCAL program runner. Shared core of the RPNx TUI and phone app. Part of the Fe2O3 suite."
+license = "Unlicense"
+repository = "https://github.com/isene/rpnx-core"
+
+[lib]
+name = "rpnx_core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uniffi = { version = "0.28", optional = true }
+
+[features]
+# Off by default: desktop (TUI) calls the engine directly. The phone app
+# enables this to expose the UniFFI surface its Kotlin shell binds to.
+uniffi = ["dep:uniffi"]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
