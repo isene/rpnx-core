@@ -171,7 +171,7 @@ fn begin_entry_if_needed(s: &mut CalcState) {
     }
 }
 
-fn commit_entry(s: &mut CalcState) {
+pub(crate) fn commit_entry(s: &mut CalcState) {
     if s.entering.is_empty() {
         return;
     }
@@ -331,12 +331,8 @@ pub fn execute(mut state: CalcState, command: String) -> StepResult {
     //   "text"        set Alpha
     //   >"text"       append to Alpha
     //   "|text"       append to Alpha
-    if let Some(rest) = cmd.strip_prefix(">\"") {
-        state.alpha.push_str(rest.trim_end_matches('"'));
-        state.lift_enabled = true;
-        return StepResult { state, error: None };
-    }
-    if let Some(rest) = cmd.strip_prefix("\"|") {
+    //   "|-text"      append to Alpha, as an HP-41 listing prints it
+    if let Some(rest) = alpha_append(cmd) {
         state.alpha.push_str(rest.trim_end_matches('"'));
         state.lift_enabled = true;
         return StepResult { state, error: None };
@@ -348,6 +344,7 @@ pub fn execute(mut state: CalcState, command: String) -> StepResult {
     }
 
     let (name, arg) = split_arg(cmd);
+    let name = canon(&name).to_string();
     let mut err: Option<String> = None;
 
     match name.as_str() {
@@ -495,6 +492,16 @@ pub fn execute(mut state: CalcState, command: String) -> StepResult {
         // ----- stack
         "enter" => return StepResult { state: key_enter(state), error: None },
         "swap" | "xy" => std::mem::swap(&mut state.x, &mut state.y),
+        // X<> nn: swap X with a register (or with Y, Z, T, L).
+        "x<>" => {
+            if let Some(r) = arg {
+                let (old_x, v) = (state.x, recall_reg(&state, &r));
+                put_reg(&mut state, &r, old_x);
+                state.x = v;
+            } else {
+                err = Some("X<> needs a register".into());
+            }
+        }
         "rdn" => {
             let x = state.x;
             state.x = state.y;
@@ -617,6 +624,8 @@ pub fn execute(mut state: CalcState, command: String) -> StepResult {
         "cla" => state.alpha = String::new(),
         // AVIEW is a no-op here: the Alpha register is always shown on screen.
         "aview" | "avi" | "aviewc" | "aon" | "aoff" | "prompt" | "pse" => {}
+        // Sound, display and printer commands of the HP-41 do nothing here.
+        "tone" | "beep" | "cld" | "adv" => {}
         "aleng" => {
             let n = state.alpha.chars().count() as f64;
             push_value(&mut state, n);
@@ -649,7 +658,8 @@ pub fn execute(mut state: CalcState, command: String) -> StepResult {
                     push_value(&mut state, c as u32 as f64);
                     state.alpha = state.alpha.chars().skip(1).collect();
                 }
-                None => err = Some("ATOX: Alpha is empty".into()),
+                // An empty Alpha gives 0, as on the HP-41. Programs loop on that.
+                None => push_value(&mut state, 0.0),
             }
         }
         "anum" => match first_number(&state.alpha, comma(&state)) {
@@ -694,7 +704,7 @@ pub fn execute(mut state: CalcState, command: String) -> StepResult {
                         if let Some(s) = state.areg.get(r) {
                             let s = s.clone();
                             state.alpha.push_str(&s);
-                        } else if let Some(&v) = state.reg.get(r) {
+                        } else if let Some(&v) = state.reg.get(&reg_key(r)) {
                             state.alpha.push_str(&fmt(&state, v));
                         } else {
                             err = Some(format!("ARCL: register {} is empty", r));
@@ -748,7 +758,52 @@ fn arg_int(arg: Option<String>, default: i32) -> i32 {
     arg.and_then(|a| a.trim().parse::<i32>().ok()).unwrap_or(default).clamp(0, 11)
 }
 
-fn norm_flag(f: &str) -> String {
+/// HP-41 spellings of the commands, so a listing keyed on a real HP-41 runs
+/// unchanged. `name` is already lowercase (a capital sigma lowercases to
+/// either small sigma, depending on where it stands).
+pub(crate) fn canon(name: &str) -> &str {
+    match name {
+        "x<>y" => "swap",
+        "1/x" => "recip",
+        "x^2" | "x\u{2191}2" => "sqr",
+        "y^x" | "y\u{2191}x" => "pow",
+        "e^x" | "e\u{2191}x" => "exp",
+        "10^x" | "10\u{2191}x" => "tenx",
+        "e^x-1" | "e\u{2191}x-1" => "expx1",
+        "ln1+x" => "ln1x",
+        "enter^" | "enter\u{2191}" => "enter",
+        "r^" | "r\u{2191}" => "rup",
+        "\u{3c3}+" => "splus",
+        "\u{3c3}-" => "sminus",
+        "cl\u{3c3}" | "cl\u{3c2}" => "cls",
+        "%ch" => "percentch",
+        "d-r" => "d_r",
+        "r-d" => "r_d",
+        "p-r" => "p_r",
+        "r-p" => "r_p",
+        "x=0?" => "xeq0",
+        "x\u{2260}0?" | "x#0?" | "x!=0?" | "x<>0?" => "xneq0",
+        "x<0?" => "xlt0",
+        "x>0?" => "xgt0",
+        "x<=0?" | "x\u{2264}0?" => "xlteq0",
+        "x>=0?" | "x\u{2265}0?" => "xgteq0",
+        "x=y?" => "xeqy",
+        "x\u{2260}y?" | "x#y?" | "x!=y?" | "x<>y?" => "xneqy",
+        "x<y?" => "xlty",
+        "x>y?" => "xgty",
+        "x<=y?" | "x\u{2264}y?" => "xlteqy",
+        "x>=y?" | "x\u{2265}y?" => "xgteqy",
+        other => other,
+    }
+}
+
+/// The text after an Alpha append marker, if the line starts with one:
+/// `>"`, `"|-` and its one-character forms, or `"|`.
+pub(crate) fn alpha_append(line: &str) -> Option<&str> {
+    [">\"", "\"|-", "\"\u{22a2}", "\"\u{251c}", "\"|"].iter().find_map(|p| line.strip_prefix(p))
+}
+
+pub(crate) fn norm_flag(f: &str) -> String {
     f.trim().parse::<i32>().map(|n| n.to_string()).unwrap_or_else(|_| f.trim().to_string())
 }
 
@@ -787,17 +842,23 @@ fn reg_key(r: &str) -> String {
 }
 
 fn store_reg(s: &mut CalcState, r: &str) {
+    let x = s.x;
+    put_reg(s, r, x);
+}
+
+/// Write `v` to a numbered or named register, or to X, Y, Z, T or L.
+fn put_reg(s: &mut CalcState, r: &str, v: f64) {
     match r.trim().to_lowercase().as_str() {
-        "x" => {}
-        "y" => s.y = s.x,
-        "z" => s.z = s.x,
-        "t" => s.t = s.x,
-        "l" => s.l = s.x,
-        _ => { s.reg.insert(reg_key(r), s.x); }
+        "x" => s.x = v,
+        "y" => s.y = v,
+        "z" => s.z = v,
+        "t" => s.t = v,
+        "l" => s.l = v,
+        _ => { s.reg.insert(reg_key(r), v); }
     }
 }
 
-fn recall_reg(s: &CalcState, r: &str) -> f64 {
+pub(crate) fn recall_reg(s: &CalcState, r: &str) -> f64 {
     match r.trim().to_lowercase().as_str() {
         "x" => s.x,
         "y" => s.y,
@@ -816,10 +877,8 @@ fn reg_arith(
 ) {
     match arg {
         Some(r) => {
-            let cur = recall_reg(s, &r);
-            let nv = f(cur, s.x);
-            let key = reg_key(&r);
-            s.reg.insert(key, nv);
+            let nv = f(recall_reg(s, &r), s.x);
+            put_reg(s, &r, nv);
         }
         None => *err = Some("Needs a register".into()),
     }

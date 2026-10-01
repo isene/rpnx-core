@@ -1,6 +1,6 @@
 [package]
 name = "fe2o3-rpnx-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Geir Isene <g@isene.com>"]
 description = "RPN / XRPN calculator engine: HP-41CX-style stack, full command set, and a FOCAL program runner. Shared core of the RPNx TUI and phone app. Part of the Fe2O3 suite."
